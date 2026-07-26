@@ -1,0 +1,10 @@
+*.backup
+*.new
+*.restore
+*.patched
+*.zip
+app.asar
+app.asar.unpacked/
+node_modules/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">OpenCode Persian RTL</title>
+  <desc id="desc">A dark banner with bidirectional arrows and the project name.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="0.55" stop-color="#1e1b4b"/>
+      <stop offset="1" stop-color="#312e81"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="360" rx="32" fill="url(#background)"/>
+  <circle cx="1040" cy="30" r="170" fill="#7c3aed" opacity="0.18" filter="url(#glow)"/>
+  <circle cx="120" cy="340" r="150" fill="#06b6d4" opacity="0.14" filter="url(#glow)"/>
+  <g fill="none" stroke="url(#accent)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M125 130h170l-38-38m38 38-38 38"/>
+    <path d="M295 230H125l38-38m-38 38 38 38"/>
+  </g>
+  <text x="370" y="170" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="66" font-weight="700">OpenCode Persian RTL</text>
+  <text x="374" y="225" fill="#c4b5fd" font-family="Segoe UI, Arial, sans-serif" font-size="26">Readable mixed-direction chat, block by block.</text>
+  <rect x="374" y="258" width="360" height="4" rx="2" fill="url(#accent)"/>
+</svg>

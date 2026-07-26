@@ -1,0 +1,21 @@
+{
+  "name": "opencode-persian-rtl",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Automatic Persian and Arabic-script direction support for OpenCode Desktop on Windows",
+  "license": "MIT",
+  "homepage": "https://github.com/rezabarzakhi/opencode-persian-rtl#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rezabarzakhi/opencode-persian-rtl.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rezabarzakhi/opencode-persian-rtl/issues"
+  },
+  "scripts": {
+    "test": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/Test-Installer.ps1"
+  },
+  "devDependencies": {
+    "@electron/asar": "4.2.1"
+  }
+}
