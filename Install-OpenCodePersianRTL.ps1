@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Install", "Restore")]
+    [ValidateSet("Install", "Restore", "Preflight", "EnableAutoMaintenance", "DisableAutoMaintenance")]
     [string]$Action = "Install",
 
     [string]$AppAsar,
@@ -20,14 +20,18 @@ if ($env:OS -ne "Windows_NT") {
 }
 
 $marker = "opencode-persian-rtl"
-$patchVersion = "1.0.0"
+$patchVersion = "1.1.0"
 $fontHash = "696249A2C74B39FFDEF55DE4DF2809C5B639D3FF80D618D8160A095D2FD49DCA"
 $fontUrl = "https://raw.githubusercontent.com/google/fonts/6f9713a50c628d79f60259319d05fa0a239a9a7f/ofl/vazirmatn/Vazirmatn%5Bwght%5D.ttf"
 $asarCommand = Join-Path $PSScriptRoot "node_modules\.bin\asar.cmd"
 
 function Resolve-AppAsar {
     if ($AppAsar) {
-        return [System.IO.Path]::GetFullPath($AppAsar)
+        $fullPath = [System.IO.Path]::GetFullPath($AppAsar)
+        if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+            return (Get-Item -LiteralPath $fullPath).FullName
+        }
+        return $fullPath
     }
 
     $candidates = @(@(
@@ -50,13 +54,36 @@ function Resolve-AppAsar {
 $AppAsar = Resolve-AppAsar
 $backup = "$AppAsar.$marker.backup"
 $metadataPath = "$AppAsar.$marker.json"
+$pathHasher = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $pathBytes = [System.Text.Encoding]::UTF8.GetBytes($AppAsar.ToUpperInvariant())
+    $installationId = ([System.BitConverter]::ToString($pathHasher.ComputeHash($pathBytes))).Replace("-", "").Substring(0, 12)
+}
+finally {
+    $pathHasher.Dispose()
+}
+$maintenanceTaskPath = "\OpenCodePersianRTL\"
+$maintenanceTaskName = "Maintenance-$installationId"
+$maintenanceRoot = Join-Path $env:LOCALAPPDATA "OpenCodePersianRTL\$installationId"
+$expectedOpenCodeExecutable = Join-Path (Split-Path -Parent (Split-Path -Parent $AppAsar)) "OpenCode.exe"
 
 function Assert-OpenCodeIsClosed {
     if ($SkipProcessCheck) {
         return
     }
 
-    if (Get-Process -Name "OpenCode" -ErrorAction SilentlyContinue) {
+    $matchingProcesses = @(Get-Process -Name "OpenCode" -ErrorAction SilentlyContinue | Where-Object {
+        try {
+            $_.Path -and [System.IO.Path]::GetFullPath($_.Path).Equals(
+                [System.IO.Path]::GetFullPath($expectedOpenCodeExecutable),
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        }
+        catch {
+            $false
+        }
+    })
+    if ($matchingProcesses.Count -gt 0) {
         throw "Close OpenCode completely, then run this installer again."
     }
 }
@@ -380,6 +407,226 @@ function Write-Metadata {
     }
 }
 
+function Invoke-WithMaintenanceLock {
+    param([Parameter(Mandatory)][scriptblock]$Operation)
+
+    $mutex = New-Object System.Threading.Mutex($false, "Local\OpenCodePersianRTLMaintenance-$installationId")
+    $hasMutex = $false
+    try {
+        try {
+            $hasMutex = $mutex.WaitOne([TimeSpan]::FromMinutes(2))
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $hasMutex = $true
+        }
+        if (-not $hasMutex) {
+            throw "Automatic maintenance is busy. Try again after the current operation finishes."
+        }
+        & $Operation
+    }
+    finally {
+        if ($hasMutex) {
+            $mutex.ReleaseMutex()
+        }
+        $mutex.Dispose()
+    }
+}
+
+function Get-MaintenanceTask {
+    Import-Module ScheduledTasks -ErrorAction Stop
+    return Get-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -ErrorAction SilentlyContinue
+}
+
+function Get-MaintenanceCommand {
+    $monitor = Join-Path $maintenanceRoot "Maintain-OpenCodePersianRTL.ps1"
+    $powershell = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+    $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$monitor`" -AppAsar `"$AppAsar`""
+    return @{
+        Execute = $powershell
+        Arguments = $arguments
+    }
+}
+
+function Assert-MaintenanceTaskOwned {
+    param([Parameter(Mandatory)]$Task)
+
+    $expected = Get-MaintenanceCommand
+    $actions = @($Task.Actions)
+    if ($actions.Count -ne 1 -or
+        -not [System.IO.Path]::GetFullPath($actions[0].Execute).Equals(
+            [System.IO.Path]::GetFullPath($expected.Execute),
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not $actions[0].Arguments.Equals($expected.Arguments, [System.StringComparison]::Ordinal)) {
+        throw "The scheduled task with this installation ID is not owned by this patch and was left unchanged."
+    }
+}
+
+function Stop-MaintenanceTask {
+    param([Parameter(Mandatory)]$Task)
+
+    Assert-MaintenanceTaskOwned -Task $Task
+    Stop-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -ErrorAction Stop
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+        $current = Get-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -ErrorAction Stop
+        if ($current.State -ne "Running") {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    throw "The existing maintenance task did not stop safely."
+}
+
+function Disable-AutoMaintenance {
+    Invoke-WithMaintenanceLock {
+        $existingTask = Get-MaintenanceTask
+        if (-not $existingTask) {
+            Write-Host "Automatic Persian RTL maintenance is already disabled."
+            return
+        }
+
+        Stop-MaintenanceTask -Task $existingTask
+        Unregister-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -Confirm:$false -ErrorAction Stop
+        Write-Host "Automatic Persian RTL maintenance was disabled."
+    }
+}
+
+function Enable-AutoMaintenance {
+    Invoke-WithMaintenanceLock {
+        Import-Module ScheduledTasks -ErrorAction Stop
+        $sourceFiles = @(
+            "Install-OpenCodePersianRTL.ps1",
+            "Maintain-OpenCodePersianRTL.ps1",
+            "package.json",
+            "package-lock.json"
+        )
+        foreach ($file in $sourceFiles) {
+            $source = Join-Path $PSScriptRoot $file
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                throw "Automatic maintenance requires the missing file: $file"
+            }
+        }
+
+        $stageRoot = "$maintenanceRoot.stage-$([guid]::NewGuid())"
+        $oldRoot = "$maintenanceRoot.old-$([guid]::NewGuid())"
+        $existingTask = $null
+        $taskRegistrationAttempted = $false
+        [System.IO.Directory]::CreateDirectory($stageRoot) | Out-Null
+        try {
+            foreach ($file in $sourceFiles) {
+                [System.IO.File]::Copy((Join-Path $PSScriptRoot $file), (Join-Path $stageRoot $file), $true)
+            }
+
+            $npm = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
+            $node = Get-Command "node.exe" -ErrorAction SilentlyContinue
+            if (-not $npm -or -not $node -or [version](& $node.Source -p "process.versions.node") -lt [version]"22.12.0") {
+                throw "Node.js 22.12 or newer with npm is required before automatic maintenance can be enabled."
+            }
+            & $npm.Source ci --ignore-scripts --no-audit --no-fund --prefix $stageRoot | Out-Null
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $stageRoot "node_modules\.bin\asar.cmd") -PathType Leaf)) {
+                throw "The locked maintenance runtime could not be prepared."
+            }
+
+            $existingTask = Get-MaintenanceTask
+            if ($existingTask) {
+                Stop-MaintenanceTask -Task $existingTask
+            }
+
+            if (Test-Path -LiteralPath $maintenanceRoot) {
+                [System.IO.Directory]::Move($maintenanceRoot, $oldRoot)
+            }
+            [System.IO.Directory]::Move($stageRoot, $maintenanceRoot)
+
+            $command = Get-MaintenanceCommand
+            $action = New-ScheduledTaskAction -Execute $command.Execute -Argument $command.Arguments
+            $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+            $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
+            $settings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries `
+                -DontStopIfGoingOnBatteries `
+                -StartWhenAvailable `
+                -MultipleInstances IgnoreNew `
+                -RestartCount 3 `
+                -RestartInterval (New-TimeSpan -Minutes 1) `
+                -ExecutionTimeLimit ([TimeSpan]::Zero)
+
+            $taskRegistrationAttempted = $true
+            Register-ScheduledTask `
+                -TaskPath $maintenanceTaskPath `
+                -TaskName $maintenanceTaskName `
+                -Action $action `
+                -Trigger $trigger `
+                -Principal $principal `
+                -Settings $settings `
+                -Description "Reapplies Persian RTL support after OpenCode Desktop updates." `
+                -Force | Out-Null
+            Start-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName
+
+            if (Test-Path -LiteralPath $oldRoot) {
+                [System.IO.Directory]::Delete($oldRoot, $true)
+            }
+            Write-Host "Automatic Persian RTL maintenance was enabled."
+            Write-Host "OpenCode will be patched and restarted automatically after compatible updates."
+        }
+        catch {
+            if (-not $existingTask -and $taskRegistrationAttempted) {
+                Unregister-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -Confirm:$false -ErrorAction SilentlyContinue
+            }
+            if (Test-Path -LiteralPath $oldRoot) {
+                if (Test-Path -LiteralPath $maintenanceRoot) {
+                    [System.IO.Directory]::Delete($maintenanceRoot, $true)
+                }
+                [System.IO.Directory]::Move($oldRoot, $maintenanceRoot)
+            }
+            elseif ($taskRegistrationAttempted -and (Test-Path -LiteralPath $maintenanceRoot)) {
+                [System.IO.Directory]::Delete($maintenanceRoot, $true)
+            }
+            if ($existingTask) {
+                Start-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -ErrorAction SilentlyContinue
+            }
+            throw
+        }
+        finally {
+            if (Test-Path -LiteralPath $stageRoot) {
+                [System.IO.Directory]::Delete($stageRoot, $true)
+            }
+        }
+    }
+}
+
+function Test-PatchPreflight {
+    if (-not (Test-Path -LiteralPath $AppAsar -PathType Leaf)) {
+        throw "OpenCode app.asar was not found at: $AppAsar"
+    }
+
+    $unpackedEntries = @(Get-UnpackedEntries -Archive $AppAsar)
+    if ($unpackedEntries.Count -gt 0 -and -not (Test-Path -LiteralPath "$AppAsar.unpacked" -PathType Container)) {
+        throw "OpenCode's app.asar.unpacked directory is missing. Repair the OpenCode installation first."
+    }
+
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("$marker-preflight-" + [guid]::NewGuid())
+    $extracted = Join-Path $tempRoot "extracted"
+    [System.IO.Directory]::CreateDirectory($tempRoot) | Out-Null
+    try {
+        Invoke-Asar -Command "extract" -Arguments @($AppAsar, $extracted) | Out-Null
+        $indexPath = Find-RendererIndex -Root $extracted
+        $html = [System.IO.File]::ReadAllText($indexPath)
+        if ($html.Contains('id="opencode-persian-rtl-style"') -or
+            $html.Contains('id="opencode-persian-rtl-script"') -or
+            $html.Contains("<!-- $marker -->")) {
+            throw "The renderer already contains a complete or partial Persian RTL patch with invalid restore state."
+        }
+        Write-Host "OpenCode passed the Persian RTL compatibility preflight."
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            [System.IO.Directory]::Delete($tempRoot, $true)
+        }
+    }
+}
+
 function Install-Patch {
     if (-not (Test-Path -LiteralPath $AppAsar -PathType Leaf)) {
         throw "OpenCode app.asar was not found at: $AppAsar"
@@ -520,7 +767,7 @@ function Install-Patch {
     }
 }
 
-function Restore-Original {
+function Get-ValidatedRestoreMetadata {
     if (-not (Test-Path -LiteralPath $backup -PathType Leaf) -or
         -not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
         throw "A complete backup and metadata pair was not found. Repair or reinstall OpenCode instead."
@@ -539,6 +786,12 @@ function Restore-Original {
     if ((Get-Sha256 -Path $backup) -ne $metadata.originalSha256) {
         throw "The OpenCode backup failed integrity verification."
     }
+
+    return $metadata
+}
+
+function Restore-Original {
+    $metadata = Get-ValidatedRestoreMetadata
 
     $stagedRestore = "$AppAsar.$marker.restore"
     $discardedPatch = "$AppAsar.$marker.patched"
@@ -566,30 +819,76 @@ function Restore-Original {
     }
 }
 
-$mutex = New-Object System.Threading.Mutex($false, "Local\OpenCodePersianRTLInstaller")
-$hasMutex = $false
-try {
-    try {
-        $hasMutex = $mutex.WaitOne(0)
-    }
-    catch [System.Threading.AbandonedMutexException] {
-        $hasMutex = $true
-    }
-    if (-not $hasMutex) {
-        throw "Another OpenCode Persian RTL installer is already running."
-    }
+function Invoke-WithInstallerLock {
+    param([Parameter(Mandatory)][scriptblock]$Operation)
 
-    Assert-OpenCodeIsClosed
-    if ($Action -eq "Restore") {
-        Restore-Original
+    $mutex = New-Object System.Threading.Mutex($false, "Local\OpenCodePersianRTLInstaller")
+    $hasMutex = $false
+    try {
+        try {
+            $hasMutex = $mutex.WaitOne(0)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $hasMutex = $true
+        }
+        if (-not $hasMutex) {
+            throw "Another OpenCode Persian RTL installer is already running."
+        }
+        & $Operation
     }
-    else {
-        Install-Patch
+    finally {
+        if ($hasMutex) {
+            $mutex.ReleaseMutex()
+        }
+        $mutex.Dispose()
     }
 }
-finally {
-    if ($hasMutex) {
-        $mutex.ReleaseMutex()
+
+switch ($Action) {
+    "Install" {
+        Invoke-WithInstallerLock {
+            Assert-OpenCodeIsClosed
+            Install-Patch
+        }
     }
-    $mutex.Dispose()
+    "Preflight" {
+        Invoke-WithInstallerLock {
+            Test-PatchPreflight
+        }
+    }
+    "Restore" {
+        Invoke-WithMaintenanceLock {
+            Assert-OpenCodeIsClosed
+            [void](Get-ValidatedRestoreMetadata)
+            $task = Get-MaintenanceTask
+            $taskXml = $null
+            if ($task) {
+                Assert-MaintenanceTaskOwned -Task $task
+                $taskXml = Export-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -ErrorAction Stop
+                Stop-MaintenanceTask -Task $task
+                Unregister-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -Confirm:$false -ErrorAction Stop
+            }
+            try {
+                Invoke-WithInstallerLock {
+                    Restore-Original
+                }
+            }
+            catch {
+                if ($taskXml) {
+                    Register-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -Xml $taskXml -Force | Out-Null
+                    Start-ScheduledTask -TaskPath $maintenanceTaskPath -TaskName $maintenanceTaskName -ErrorAction SilentlyContinue
+                }
+                throw
+            }
+            if ($taskXml) {
+                Write-Host "Automatic Persian RTL maintenance was disabled."
+            }
+        }
+    }
+    "EnableAutoMaintenance" {
+        Enable-AutoMaintenance
+    }
+    "DisableAutoMaintenance" {
+        Disable-AutoMaintenance
+    }
 }

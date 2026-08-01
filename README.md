@@ -27,7 +27,7 @@
 Automatic Persian and Arabic-script direction detection plus the Vazirmatn font for [OpenCode Desktop](https://opencode.ai/) on Windows.
 
 > [!IMPORTANT]
-> This is an unofficial renderer patch. It is not affiliated with OpenCode and may need to be reapplied after OpenCode updates.
+> This is an unofficial renderer patch. It is not affiliated with OpenCode. Optional automatic maintenance can reapply it after compatible OpenCode updates.
 
 ## Why
 
@@ -61,7 +61,7 @@ The installer is intentionally defensive:
 | --- | --- |
 | Operating system | Windows 10 and Windows 11 |
 | OpenCode | Desktop app using the current Electron renderer layout |
-| Tested OpenCode version | 1.18.5 |
+| Tested OpenCode version | 1.18.10 |
 | PowerShell | Windows PowerShell 5.1 or newer |
 | Node.js | 22.12 or newer with npm |
 
@@ -100,6 +100,22 @@ To keep the current interface font:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-OpenCodePersianRTL.ps1 -SkipFontInstall
 ```
 
+## Automatic Update Maintenance
+
+Enable the optional background maintenance task:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-OpenCodePersianRTL.ps1 -Action EnableAutoMaintenance
+```
+
+The task runs only for the current Windows user. When an OpenCode update replaces the patched archive, it waits for the new archive to become stable, asks OpenCode to close normally, reapplies the patch, and restarts the app. It never force-terminates OpenCode; if the app does not close normally, maintenance retries later.
+
+Disable automatic maintenance without changing the current patch:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-OpenCodePersianRTL.ps1 -Action DisableAutoMaintenance
+```
+
 ## Restore
 
 Close OpenCode, then run:
@@ -108,11 +124,11 @@ Close OpenCode, then run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-OpenCodePersianRTL.ps1 -Action Restore
 ```
 
-Restore only proceeds when the installed archive and backup match their recorded hashes. Vazirmatn remains installed because other applications may be using it.
+Restore only proceeds when the installed archive and backup match their recorded hashes. It disables automatic maintenance first so the patch is not reapplied. Vazirmatn remains installed because other applications may be using it.
 
 ## Updates
 
-OpenCode updates normally replace the patched archive. If RTL behavior disappears, close OpenCode and run the installer again. Do not restore a backup created for an older OpenCode version; the installer blocks this automatically.
+OpenCode updates normally replace the patched archive. Enable automatic maintenance to reapply it, or close OpenCode and run the installer manually. Do not restore a backup created for an older OpenCode version; the installer blocks this automatically.
 
 ## What It Changes
 
@@ -131,6 +147,13 @@ app.asar.opencode-persian-rtl.backup
 app.asar.opencode-persian-rtl.json
 ```
 
+Automatic maintenance also creates a scheduled task and stores its runtime here:
+
+```text
+%LOCALAPPDATA%\OpenCodePersianRTL
+Task Scheduler\OpenCode Persian RTL Maintenance
+```
+
 ## Troubleshooting
 
 ### OpenCode is running
@@ -147,7 +170,11 @@ OpenCode changed after the patch was installed. Reinstall or repair OpenCode ins
 
 ### The patch disappeared after an update
 
-Run the installer again. The installer treats the updated archive as a new clean version and creates a matching backup.
+Enable automatic maintenance or run the installer again. The installer treats the updated archive as a new clean version and creates a matching backup. Maintenance details are written to:
+
+```text
+%LOCALAPPDATA%\OpenCodePersianRTL\maintenance.log
+```
 
 ## Development
 
@@ -158,7 +185,7 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm test
 ```
 
-The test builds a mock Electron archive with an unpacked native file, installs the patch twice, validates the renderer and unpack metadata, restores the original, and compares SHA-256 hashes.
+The test builds a mock Electron archive with an unpacked native file, validates installation and restore safeguards, simulates an app update, verifies automatic patch reapplication, and compares SHA-256 hashes.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CHANGELOG.md](CHANGELOG.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
 

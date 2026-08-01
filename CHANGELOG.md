@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## 1.1.0 - 2026-07-31
+
+### Added
+
+- Optional scheduled maintenance that detects OpenCode updates and reapplies the patch.
+- Graceful OpenCode close and automatic restart after a compatible update is patched.
+- Persistent per-user maintenance runtime with bounded logging.
+- One-shot maintenance mode for integration testing.
+
+### Changed
+
+- Process checks now target only the selected OpenCode installation.
+- Restoring the original interface automatically disables scheduled maintenance.
+- Compatibility was verified against OpenCode Desktop 1.18.10.
+
 ## 1.0.0 - 2026-07-26
 
 ### Added

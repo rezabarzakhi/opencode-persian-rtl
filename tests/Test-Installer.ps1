@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $installer = Join-Path $projectRoot "Install-OpenCodePersianRTL.ps1"
+$monitor = Join-Path $projectRoot "Maintain-OpenCodePersianRTL.ps1"
 $asarCommand = Join-Path $projectRoot "node_modules\.bin\asar.cmd"
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("opencode-persian-rtl-test-" + [guid]::NewGuid())
 $source = Join-Path $testRoot "source"
@@ -25,7 +26,7 @@ try {
     [System.IO.Directory]::CreateDirectory($nativeDirectory) | Out-Null
     [System.IO.File]::WriteAllText(
         (Join-Path $source "package.json"),
-        '{"name":"@opencode-ai/desktop","version":"1.18.5"}'
+        '{"name":"@opencode-ai/desktop","version":"1.18.10"}'
     )
     [System.IO.File]::WriteAllText(
         (Join-Path $renderer "index.html"),
@@ -102,6 +103,12 @@ try {
 
     $patchedCopy = Join-Path $testRoot "patched.asar"
     [System.IO.File]::Copy($archive, $patchedCopy)
+    $backupPath = "$archive.opencode-persian-rtl.backup"
+    $metadataPath = "$archive.opencode-persian-rtl.json"
+    $staleBackup = Join-Path $testRoot "stale.backup"
+    $staleMetadata = Join-Path $testRoot "stale.json"
+    [System.IO.File]::Copy($backupPath, $staleBackup)
+    [System.IO.File]::Copy($metadataPath, $staleMetadata)
     $stream = [System.IO.File]::Open($archive, [System.IO.FileMode]::Append)
     try {
         $stream.WriteByte(0)
@@ -132,7 +139,29 @@ try {
         throw "The restored archive does not match the original SHA-256 hash."
     }
 
-    Write-Host "PASS: install, unpacked content, renderer, font collision, idempotency, restore-data guard, stale-restore guard, restore, and SHA-256 checks."
+    [System.IO.File]::Copy($staleBackup, $backupPath)
+    [System.IO.File]::Copy($staleMetadata, $metadataPath)
+
+    & $monitor -AppAsar $archive -StartupDelaySeconds 0 -Once -SkipRestart
+    if (-not $?) {
+        throw "Automatic maintenance test failed."
+    }
+    $maintainedHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+    if ($maintainedHash -eq $originalHash) {
+        throw "Automatic maintenance did not reapply the patch."
+    }
+
+    & $monitor -AppAsar $archive -StartupDelaySeconds 0 -Once -SkipRestart
+    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $maintainedHash) {
+        throw "Automatic maintenance modified an already patched archive."
+    }
+
+    & $installer -Action Restore -AppAsar $archive -SkipFontInstall -SkipProcessCheck
+    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $originalHash) {
+        throw "The archive did not restore after automatic maintenance."
+    }
+
+    Write-Host "PASS: install, unpacked content, renderer, font collision, idempotency, restore-data guard, stale-restore guard, restore, automatic update maintenance, and SHA-256 checks."
 }
 finally {
     $env:LOCALAPPDATA = $originalLocalAppData
