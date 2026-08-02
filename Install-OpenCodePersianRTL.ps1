@@ -20,7 +20,7 @@ if ($env:OS -ne "Windows_NT") {
 }
 
 $marker = "opencode-persian-rtl"
-$patchVersion = "1.1.1"
+$patchVersion = "1.1.2"
 $fontHash = "696249A2C74B39FFDEF55DE4DF2809C5B639D3FF80D618D8160A095D2FD49DCA"
 $fontUrl = "https://raw.githubusercontent.com/google/fonts/6f9713a50c628d79f60259319d05fa0a239a9a7f/ofl/vazirmatn/Vazirmatn%5Bwght%5D.ttf"
 $asarCommand = Join-Path $PSScriptRoot "node_modules\.bin\asar.cmd"
@@ -541,7 +541,13 @@ function Enable-AutoMaintenance {
             $command = Get-MaintenanceCommand
             $action = New-ScheduledTaskAction -Execute $command.Execute -Argument $command.Arguments
             $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-            $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+            $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+            $retryTrigger = New-ScheduledTaskTrigger `
+                -Once `
+                -At (Get-Date).AddMinutes(1) `
+                -RepetitionInterval (New-TimeSpan -Minutes 5) `
+                -RepetitionDuration (New-TimeSpan -Days 3650)
+            $triggers = @($logonTrigger, $retryTrigger)
             $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
             $settings = New-ScheduledTaskSettingsSet `
                 -AllowStartIfOnBatteries `
@@ -557,7 +563,7 @@ function Enable-AutoMaintenance {
                 -TaskPath $maintenanceTaskPath `
                 -TaskName $maintenanceTaskName `
                 -Action $action `
-                -Trigger $trigger `
+                -Trigger $triggers `
                 -Principal $principal `
                 -Settings $settings `
                 -Description "Reapplies Persian RTL support after OpenCode Desktop updates." `

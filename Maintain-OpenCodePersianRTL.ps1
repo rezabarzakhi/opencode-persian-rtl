@@ -245,7 +245,9 @@ function Invoke-Maintenance {
     $restartAfterPatch = $pending -and [bool]$pending.restart
     try {
         Write-MaintenanceLog "Applying the Persian RTL patch while OpenCode is closed."
-        & $installer -Action Install -AppAsar $AppAsar -SkipFontInstall
+        # OpenCode may relaunch itself after maintenance observes a clean shutdown.
+        # The installer still uses atomic replacement and verifies every hash.
+        & $installer -Action Install -AppAsar $AppAsar -SkipFontInstall -SkipProcessCheck
         if (-not $?) {
             throw "The installer returned an unsuccessful status."
         }

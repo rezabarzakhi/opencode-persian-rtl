@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## 1.1.2 - 2026-08-02
+
+### Fixed
+
+- Maintenance tolerates OpenCode relaunching itself after a clean shutdown was observed.
+- A five-minute scheduled trigger resumes maintenance if the long-running monitor is interrupted.
+
 ## 1.1.1 - 2026-08-02
 
 ### Fixed
