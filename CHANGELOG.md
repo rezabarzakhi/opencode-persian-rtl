@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## 1.1.1 - 2026-08-02
+
+### Fixed
+
+- Maintenance now waits for the user to close OpenCode normally before patching.
+- OpenCode is reopened automatically after a pending update is patched.
+- A crash-safe pending marker preserves update and restart intent across task restarts.
+- The monitor no longer attempts to close OpenCode before the patch can be applied.
+- Empty process results are handled correctly under PowerShell strict mode.
+
 ## 1.1.0 - 2026-07-31
 
 ### Added

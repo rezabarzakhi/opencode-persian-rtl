@@ -108,7 +108,7 @@ Enable the optional background maintenance task:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-OpenCodePersianRTL.ps1 -Action EnableAutoMaintenance
 ```
 
-The task runs only for the current Windows user. When an OpenCode update replaces the patched archive, it waits for the new archive to become stable, asks OpenCode to close normally, reapplies the patch, and restarts the app. It never force-terminates OpenCode; if the app does not close normally, maintenance retries later.
+The task runs only for the current Windows user. When an OpenCode update replaces the patched archive, it checks compatibility and waits for you to close OpenCode normally. It then reapplies the patch and reopens the app automatically. It never closes or force-terminates OpenCode on its own.
 
 Disable automatic maintenance without changing the current patch:
 

@@ -20,7 +20,7 @@ if ($env:OS -ne "Windows_NT") {
 }
 
 $marker = "opencode-persian-rtl"
-$patchVersion = "1.1.0"
+$patchVersion = "1.1.1"
 $fontHash = "696249A2C74B39FFDEF55DE4DF2809C5B639D3FF80D618D8160A095D2FD49DCA"
 $fontUrl = "https://raw.githubusercontent.com/google/fonts/6f9713a50c628d79f60259319d05fa0a239a9a7f/ofl/vazirmatn/Vazirmatn%5Bwght%5D.ttf"
 $asarCommand = Join-Path $PSScriptRoot "node_modules\.bin\asar.cmd"
