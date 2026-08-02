@@ -22,6 +22,7 @@ $logPath = Join-Path $PSScriptRoot "maintenance.log"
 $pendingPath = Join-Path $PSScriptRoot "update-pending.json"
 $AppAsar = [System.IO.Path]::GetFullPath($AppAsar)
 $metadataPath = "$AppAsar.$marker.json"
+$preparedArchive = "$AppAsar.$marker.prepared"
 $appExecutable = Join-Path (Split-Path -Parent (Split-Path -Parent $AppAsar)) "OpenCode.exe"
 $pathHasher = [System.Security.Cryptography.SHA256]::Create()
 try {
@@ -54,6 +55,29 @@ function Get-Sha256 {
     param([Parameter(Mandatory)][string]$Path)
 
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+
+function Get-UnpackedFingerprint {
+    $root = "$AppAsar.unpacked"
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        return "none"
+    }
+
+    $prefixLength = $root.TrimEnd("\", "/").Length + 1
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($file in Get-ChildItem -LiteralPath $root -File -Recurse | Sort-Object FullName) {
+        $relativePath = $file.FullName.Substring($prefixLength).Replace("\", "/")
+        [void]$builder.Append($relativePath).Append("|").Append((Get-Sha256 -Path $file.FullName)).Append("`n")
+    }
+
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($builder.ToString())
+        return ([System.BitConverter]::ToString($hasher.ComputeHash($bytes))).Replace("-", "")
+    }
+    finally {
+        $hasher.Dispose()
+    }
 }
 
 function Test-PatchIsCurrent {
@@ -115,8 +139,9 @@ function Read-PendingUpdate {
     }
     try {
         $record = [System.IO.File]::ReadAllText($pendingPath) | ConvertFrom-Json
-        if (-not $record.archiveSha256) {
-            throw "Missing archive hash."
+        if (-not $record.sourceSha256 -or -not $record.patchedSha256 -or
+            -not $record.patchVersion -or -not $record.unpackedFingerprint) {
+            throw "Missing prepared update data."
         }
         return $record
     }
@@ -127,23 +152,150 @@ function Read-PendingUpdate {
 }
 
 function Write-PendingUpdate {
-    param(
-        [Parameter(Mandatory)][string]$ArchiveHash,
-        [Parameter(Mandatory)][bool]$Restart
-    )
+    param([Parameter(Mandatory)][hashtable]$Record)
 
     $temporary = "$pendingPath.new"
-    $json = @{
-        archiveSha256 = $ArchiveHash
-        restart = $Restart
-    } | ConvertTo-Json
+    $json = $Record | ConvertTo-Json
     [System.IO.File]::WriteAllText($temporary, $json, [System.Text.UTF8Encoding]::new($false))
     if (Test-Path -LiteralPath $pendingPath) {
-        [System.IO.File]::Replace($temporary, $pendingPath, $null, $true)
+        $oldPending = "$pendingPath.old"
+        if (Test-Path -LiteralPath $oldPending) {
+            [System.IO.File]::Delete($oldPending)
+        }
+        [System.IO.File]::Replace($temporary, $pendingPath, $oldPending, $true)
+        [System.IO.File]::Delete($oldPending)
     }
     else {
         [System.IO.File]::Move($temporary, $pendingPath)
     }
+}
+
+function Write-AppMetadata {
+    param(
+        [Parameter(Mandatory)]$Pending,
+        [Parameter(Mandatory)][ValidateSet("pending", "installed")][string]$State
+    )
+
+    $temporary = "$metadataPath.new"
+    $json = @{
+        schema = 1
+        state = $State
+        patchVersion = $Pending.patchVersion
+        originalSha256 = $Pending.sourceSha256
+        patchedSha256 = $Pending.patchedSha256
+    } | ConvertTo-Json
+    [System.IO.File]::WriteAllText($temporary, $json, [System.Text.UTF8Encoding]::new($false))
+    if (Test-Path -LiteralPath $metadataPath) {
+        $oldMetadata = "$metadataPath.old"
+        if (Test-Path -LiteralPath $oldMetadata) {
+            [System.IO.File]::Delete($oldMetadata)
+        }
+        [System.IO.File]::Replace($temporary, $metadataPath, $oldMetadata, $true)
+        [System.IO.File]::Delete($oldMetadata)
+    }
+    else {
+        [System.IO.File]::Move($temporary, $metadataPath)
+    }
+}
+
+function Prepare-PatchedArchive {
+    param(
+        [Parameter(Mandatory)][string]$SourceHash,
+        [Parameter(Mandatory)][string]$UnpackedFingerprint,
+        [Parameter(Mandatory)][bool]$Restart
+    )
+
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("$marker-prepare-" + [guid]::NewGuid())
+    $tempArchive = Join-Path $tempRoot "app.asar"
+    [System.IO.Directory]::CreateDirectory($tempRoot) | Out-Null
+    try {
+        [System.IO.File]::Copy($AppAsar, $tempArchive, $true)
+        if (Test-Path -LiteralPath "$AppAsar.unpacked" -PathType Container) {
+            Copy-Item -LiteralPath "$AppAsar.unpacked" -Destination "$tempArchive.unpacked" -Recurse
+        }
+
+        & $installer -Action Install -AppAsar $tempArchive -SkipFontInstall
+        if (-not $?) {
+            throw "The preparation installer returned an unsuccessful status."
+        }
+        if ((Get-Sha256 -Path $AppAsar) -ne $SourceHash) {
+            throw "OpenCode changed while the patched archive was being prepared."
+        }
+        if ((Get-UnpackedFingerprint) -ne $UnpackedFingerprint) {
+            throw "OpenCode's unpacked files changed while the patched archive was being prepared."
+        }
+
+        $tempMetadataPath = "$tempArchive.$marker.json"
+        $tempMetadata = [System.IO.File]::ReadAllText($tempMetadataPath) | ConvertFrom-Json
+        $patchedHash = Get-Sha256 -Path $tempArchive
+        if ($tempMetadata.state -ne "installed" -or $tempMetadata.patchedSha256 -ne $patchedHash -or
+            $tempMetadata.originalSha256 -ne $SourceHash) {
+            throw "The prepared archive failed metadata verification."
+        }
+
+        [System.IO.File]::Copy($tempArchive, $preparedArchive, $true)
+        if ((Get-Sha256 -Path $preparedArchive) -ne $patchedHash) {
+            throw "The staged prepared archive failed hash verification."
+        }
+        Write-PendingUpdate -Record @{
+            sourceSha256 = $SourceHash
+            patchedSha256 = $patchedHash
+            patchVersion = $tempMetadata.patchVersion
+            unpackedFingerprint = $UnpackedFingerprint
+            restart = $Restart
+        }
+        return Read-PendingUpdate
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            [System.IO.Directory]::Delete($tempRoot, $true)
+        }
+    }
+}
+
+function Commit-PreparedArchive {
+    param([Parameter(Mandatory)]$Pending)
+
+    $currentHash = Get-Sha256 -Path $AppAsar
+    $backupPath = "$AppAsar.$marker.backup"
+    if ($currentHash -eq $Pending.patchedSha256) {
+        if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf) -or
+            (Get-Sha256 -Path $backupPath) -ne $Pending.sourceSha256) {
+            throw "The prepared patch was committed without a valid backup. Manual repair is required."
+        }
+        if ((Get-UnpackedFingerprint) -ne $Pending.unpackedFingerprint) {
+            throw "The unpacked files changed during prepared patch recovery."
+        }
+        Write-AppMetadata -Pending $Pending -State "installed"
+        return
+    }
+    if ($currentHash -ne $Pending.sourceSha256) {
+        throw "OpenCode changed after the patched archive was prepared."
+    }
+    if (-not (Test-Path -LiteralPath $preparedArchive -PathType Leaf) -or
+        (Get-Sha256 -Path $preparedArchive) -ne $Pending.patchedSha256) {
+        throw "The prepared archive is missing or invalid."
+    }
+
+    Write-AppMetadata -Pending $Pending -State "pending"
+    if (Test-Path -LiteralPath $backupPath) {
+        [System.IO.File]::Delete($backupPath)
+    }
+    if (@(Get-OpenCodeProcesses).Count -gt 0) {
+        throw "OpenCode restarted before the prepared patch could be committed."
+    }
+    if ((Get-Sha256 -Path $AppAsar) -ne $Pending.sourceSha256) {
+        throw "OpenCode changed immediately before the prepared patch commit."
+    }
+    if ((Get-UnpackedFingerprint) -ne $Pending.unpackedFingerprint) {
+        throw "OpenCode's unpacked files changed before the prepared patch commit."
+    }
+    [System.IO.File]::Replace($preparedArchive, $AppAsar, $backupPath, $true)
+    if ((Get-Sha256 -Path $AppAsar) -ne $Pending.patchedSha256 -or
+        (Get-Sha256 -Path $backupPath) -ne $Pending.sourceSha256) {
+        throw "The prepared archive failed post-commit verification."
+    }
+    Write-AppMetadata -Pending $Pending -State "installed"
 }
 
 function Start-OpenCodeIfRequested {
@@ -197,7 +349,16 @@ function Invoke-Maintenance {
         $script:preflightFailedHash = $null
     }
 
-    $pendingMatches = $pending -and $pending.archiveSha256 -eq $currentHash
+    $pendingMatches = $pending -and (
+        $pending.sourceSha256 -eq $currentHash -or $pending.patchedSha256 -eq $currentHash
+    )
+    if ($pendingMatches -and $pending.sourceSha256 -eq $currentHash -and
+        (-not (Test-Path -LiteralPath $preparedArchive -PathType Leaf) -or
+            (Get-Sha256 -Path $preparedArchive) -ne $pending.patchedSha256)) {
+        [System.IO.File]::Delete($pendingPath)
+        $pending = $null
+        $pendingMatches = $false
+    }
     if (-not $pendingMatches) {
         $stableHash = Get-StableArchiveHash
         if (-not $stableHash) {
@@ -229,8 +390,20 @@ function Invoke-Maintenance {
         }
 
         $restart = @(Get-OpenCodeProcesses).Count -gt 0
-        Write-PendingUpdate -ArchiveHash $stableHash -Restart $restart
-        $pending = Read-PendingUpdate
+        try {
+            Write-MaintenanceLog "Preparing the Persian RTL patch in the background."
+            $unpackedFingerprint = Get-UnpackedFingerprint
+            $pending = Prepare-PatchedArchive `
+                -SourceHash $stableHash `
+                -UnpackedFingerprint $unpackedFingerprint `
+                -Restart $restart
+            Write-MaintenanceLog "The patched archive is prepared and verified."
+        }
+        catch {
+            $script:failedArchiveHash = $stableHash
+            Write-MaintenanceLog "Patch preparation failed; automatic retries are paused for this app version: $($_.Exception.Message)"
+            return
+        }
         $currentHash = $stableHash
         if ($restart) {
             Write-MaintenanceLog "A compatible OpenCode update is ready. Waiting for OpenCode to close normally before patching."
@@ -244,30 +417,15 @@ function Invoke-Maintenance {
 
     $restartAfterPatch = $pending -and [bool]$pending.restart
     try {
-        Write-MaintenanceLog "Applying the Persian RTL patch while OpenCode is closed."
-        # OpenCode may relaunch itself after maintenance observes a clean shutdown.
-        # The installer still uses atomic replacement and verifies every hash.
-        & $installer -Action Install -AppAsar $AppAsar -SkipFontInstall -SkipProcessCheck
-        if (-not $?) {
-            throw "The installer returned an unsuccessful status."
-        }
+        Write-MaintenanceLog "Committing the prepared Persian RTL patch while OpenCode is closed."
+        Commit-PreparedArchive -Pending $pending
         Write-MaintenanceLog "The Persian RTL patch was applied successfully."
         if (Start-OpenCodeIfRequested -Restart $restartAfterPatch) {
             [System.IO.File]::Delete($pendingPath)
         }
     }
     catch {
-        $script:failedArchiveHash = if (Test-Path -LiteralPath $AppAsar -PathType Leaf) {
-            Get-Sha256 -Path $AppAsar
-        } else {
-            $currentHash
-        }
-        Write-MaintenanceLog "Patch failed; automatic retries are paused for this app version: $($_.Exception.Message)"
-        if ($restartAfterPatch -and @(Get-OpenCodeProcesses).Count -eq 0 -and
-            (Test-Path -LiteralPath $appExecutable -PathType Leaf)) {
-            Start-Process -FilePath $appExecutable
-            Write-MaintenanceLog "OpenCode was restarted without the patch after maintenance failed."
-        }
+        Write-MaintenanceLog "Prepared patch commit was deferred and will be retried: $($_.Exception.Message)"
     }
 }
 
