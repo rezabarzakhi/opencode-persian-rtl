@@ -16,6 +16,6 @@
     "test": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/Test-Installer.ps1"
   },
   "devDependencies": {
-    "@electron/asar": "4.2.1"
+    "@electron/asar": "4.3.0"
   }
 }
